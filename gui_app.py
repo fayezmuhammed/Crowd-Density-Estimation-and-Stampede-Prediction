@@ -20,8 +20,10 @@ class CrowdCountingGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Crowd Counting Application")
-        self.root.geometry("1400x800")
+        self.root.title("Crowd Counting Application")
+        self.root.geometry("800x600") # Reduced size since video is separate
         self.root.resizable(True, True)
+        self.video_window = None # Toplevel window for video
         
         # Variables
         self.model_choice = tk.StringVar(value="csrnet")
@@ -203,12 +205,7 @@ class CrowdCountingGUI:
                                      height=2) # Fixed height to reserve space
         self.alert_label.pack(fill=tk.X)
 
-        # Video Display
-        display_frame = ttk.LabelFrame(main_frame, text="Video Display", padding="10")
-        display_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        self.canvas = tk.Canvas(display_frame, bg="black", highlightthickness=0)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas = None # Will be created in separate window
         
         # Status Bar
         status_frame = ttk.Frame(main_frame)
@@ -300,8 +297,27 @@ class CrowdCountingGUI:
             return True
         except Exception as e:
             messagebox.showerror("Model Error", f"Failed to load model: {str(e)}")
+            messagebox.showerror("Model Error", f"Failed to load model: {str(e)}")
             return False
     
+    def create_video_window(self):
+        if self.video_window is not None:
+             try:
+                 self.video_window.destroy()
+             except:
+                 pass
+        
+        self.video_window = tk.Toplevel(self.root)
+        self.video_window.title("Video Output")
+        self.video_window.geometry("1280x720")
+        
+        # Handle manual closing of video window
+        self.video_window.protocol("WM_DELETE_WINDOW", self.stop_processing)
+        
+        self.canvas = tk.Canvas(self.video_window, bg="black", highlightthickness=0)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.image_item = None # Reset image item
+
     def start_processing(self):
         # Validate input
         if self.input_choice.get() == "file" and not self.video_path.get():
@@ -311,6 +327,9 @@ class CrowdCountingGUI:
         # Load model
         if not self.load_model():
             return
+        
+        # Create video window
+        self.create_video_window()
         
         # Open video source
         if self.input_choice.get() == "camera":
@@ -343,6 +362,15 @@ class CrowdCountingGUI:
         if self.cap:
             self.cap.release()
         self.update_status("Processing stopped")
+        
+        if self.video_window:
+            try:
+                self.video_window.destroy()
+            except:
+                pass
+            self.video_window = None
+            self.canvas = None
+            self.image_item = None
     
     def resize_with_padding(self, image):
         old_height, old_width = image.shape[:2]
@@ -498,6 +526,10 @@ class CrowdCountingGUI:
         self.root.after(0, self.start_btn.config, {"state": tk.NORMAL})
     
     def toggle_roi_selection(self):
+        if not self.canvas:
+             messagebox.showwarning("ROI Error", "Please start processing first to select ROI on the video.")
+             return
+             
         if self.roi_select_active:
             self.stop_roi_selection()
         else:
@@ -537,6 +569,8 @@ class CrowdCountingGUI:
         return model_x, model_y
 
     def display_frame(self, frame):
+        if not self.canvas: return
+        
         # Initial frame is BGR
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
