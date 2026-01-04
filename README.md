@@ -11,7 +11,7 @@ Please download it from the following link and rename it as such:
 the above file is part of the repository:
 https://github.com/leeyeehoo/CSRNet-pytorch
 
-note:I did not train nor in anyway have any relation to the model stated above.All credit goes to the author.
+NOTE: I did not train nor in anyway have any relation to the model stated above. All credit goes to the author.
 
 ### Instructions
 1. Download the file from the link above.
