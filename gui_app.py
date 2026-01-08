@@ -59,6 +59,11 @@ class CrowdCountingGUI:
         self.display_offset_x = 0
         self.display_offset_y = 0
 
+        # Calibration Variables
+        self.calibration_active = False
+        self.calibration_points = []
+
+
         
         # Model paths
         self.csrnet_path_front = "best_csrnet.pth"
@@ -170,6 +175,11 @@ class CrowdCountingGUI:
         self.count_threshold_entry.pack(side=tk.LEFT, padx=5)
         self.count_threshold_entry.pack(side=tk.LEFT, padx=5)
         ttk.Label(count_threshold_frame, text="(Alert when count exceeds this value)").pack(side=tk.LEFT, padx=5)
+        
+        # Calibration Button
+        self.cal_btn = ttk.Button(count_threshold_frame, text="Calibrate 1m", command=self.toggle_calibration)
+        self.cal_btn.pack(side=tk.LEFT, padx=5)
+
         
         # ROI Controls
         roi_frame = ttk.LabelFrame(control_frame, text="Region of Interest", padding="5")
@@ -567,6 +577,94 @@ class CrowdCountingGUI:
         self.canvas.unbind("<ButtonRelease-1>")
         self.roi_start = None
         self.roi_current = None
+
+    # --- Calibration Logic ---
+    def toggle_calibration(self):
+        if not self.canvas:
+             messagebox.showwarning("Calibration Error", "Please start processing first.")
+             return
+             
+        if self.calibration_active:
+            self.stop_calibration()
+        else:
+            self.start_calibration()
+            
+    def start_calibration(self):
+        self.calibration_active = True
+        self.calibration_points = []
+        self.cal_btn.config(text="Cancel Calib")
+        
+        # Configure canvas cursor
+        try:
+             self.canvas.config(cursor="tcross")
+        except:
+             self.canvas.config(cursor="crosshair") # Fallback
+             
+        self.update_status("Click two points on the video that act as 1 meter.")
+        
+        # Unbind ROI events to avoid conflict
+        if self.roi_select_active:
+            self.stop_roi_selection()
+            
+        self.canvas.bind("<ButtonPress-1>", self.on_calibration_click)
+        
+    def stop_calibration(self):
+        self.calibration_active = False
+        self.cal_btn.config(text="Calibrate 1m")
+        self.canvas.config(cursor="")
+        self.canvas.unbind("<ButtonPress-1>")
+        self.calibration_points = []
+        
+    def on_calibration_click(self, event):
+        mx, my = self.get_model_coords(event.x, event.y)
+        
+        # Draw point on canvas
+        r = 3
+        self.canvas.create_oval(event.x-r, event.y-r, event.x+r, event.y+r, fill="red", outline="white", tags="calib_mark")
+        
+        self.calibration_points.append((mx, my))
+        
+        if len(self.calibration_points) == 2:
+            p1 = self.calibration_points[0]
+            p2 = self.calibration_points[1]
+            
+            # Calculate distance in pixels
+            dist_px = np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+            
+            if dist_px < 5:
+                messagebox.showwarning("Error", "Points are too close.")
+                self.start_calibration() # Restart
+                return
+                
+            # Logic: dist_px corresponds to 1 meter.
+            px_per_meter = dist_px
+            
+            # Calculate total area of view in meters
+            # Width_m * Height_m
+            width_m = self.fixed_width / px_per_meter
+            height_m = self.fixed_height / px_per_meter
+            area_m2 = width_m * height_m
+            
+            # Critical Density constant: 4 people / m^2
+            CRITICAL_DENSITY = 4 
+            suggested_threshold = int(area_m2 * CRITICAL_DENSITY)
+            
+            response = messagebox.askyesno(
+                "Calibration Complete", 
+                f"Pixels per meter: {dist_px:.1f} px\n"
+                f"Est. Total Area: {area_m2:.1f} m²\n\n"
+                f"Calculated Safe Threshold: {suggested_threshold}\n"
+                f"(Based on 4 ppl/m²)\n\n"
+                f"Apply this threshold?"
+            )
+            
+            if response:
+                self.count_threshold.set(suggested_threshold)
+                self.update_status(f"Threshold set to {suggested_threshold}")
+            
+            # Clean up
+            self.canvas.delete("calib_mark")
+            self.stop_calibration()
 
     def get_model_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to model/image coordinates"""
