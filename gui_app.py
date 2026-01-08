@@ -405,12 +405,25 @@ class CrowdCountingGUI:
         # Apply ROI Mask if active
         if self.roi_active and self.roi_coords:
             x1, y1, x2, y2 = self.roi_coords
+            
+            # CSRNet density map is smaller (1/8th size), so we must scale coordinates
+            h_map, w_map = density_map.shape
+            scale_x = w_map / self.fixed_width
+            scale_y = h_map / self.fixed_height
+            
+            # specific scaling logic for CSRNet
+            roi_x1 = int(x1 * scale_x)
+            roi_x2 = int(x2 * scale_x)
+            roi_y1 = int(y1 * scale_y)
+            roi_y2 = int(y2 * scale_y)
+            
+            roi_x1 = max(0, roi_x1)
+            roi_x2 = min(w_map, roi_x2)
+            roi_y1 = max(0, roi_y1)
+            roi_y2 = min(h_map, roi_y2)
+            
             mask = np.zeros_like(density_map)
-            # Ensure coords are within bounds
-            h, w = density_map.shape
-            x1, x2 = max(0, x1), min(w, x2)
-            y1, y2 = max(0, y1), min(h, y2)
-            mask[y1:y2, x1:x2] = 1
+            mask[roi_y1:roi_y2, roi_x1:roi_x2] = 1
             density_map = density_map * mask
             
         count = np.sum(density_map)
