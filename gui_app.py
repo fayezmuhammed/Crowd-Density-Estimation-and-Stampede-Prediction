@@ -348,7 +348,13 @@ class CrowdCountingGUI:
             except:
                 idx = 0
             print(f"Attempting to open camera index: {idx}")
-            self.cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+            import platform
+            if platform.system() == "Darwin":
+                self.cap = cv2.VideoCapture(idx, cv2.CAP_AVFOUNDATION)
+            elif platform.system() == "Windows":
+                self.cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+            else:
+                self.cap = cv2.VideoCapture(idx)
         else:
             self.cap = cv2.VideoCapture(self.video_path.get())
         
@@ -369,18 +375,8 @@ class CrowdCountingGUI:
         self.is_processing = False
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
-        if self.cap:
-            self.cap.release()
         self.update_status("Processing stopped")
-        
-        if self.video_window:
-            try:
-                self.video_window.destroy()
-            except:
-                pass
-            self.video_window = None
-            self.canvas = None
-            self.image_item = None
+        # Cleanup is handled by the processing thread when it exits
     
     def resize_with_padding(self, image):
         old_height, old_width = image.shape[:2]
@@ -534,19 +530,37 @@ class CrowdCountingGUI:
                         self.root.after(0, self.hide_alert)
                         self.alert_active = False
                 
-                # Update display
-                self.display_frame(processed_frame)
+                # Update display on main thread (tkinter is not thread-safe)
+                frame_copy = processed_frame.copy()
+                self.root.after(0, self.display_frame, frame_copy)
                 self.root.after(0, self.update_status, f"Processing | Model: {self.model_choice.get().upper()} | Count: {count:.1f}")
                 self.root.after(0, self.fps_label.config, {"text": f"FPS: {fps:.1f}"})
+                
+                # Small delay to prevent flooding the event queue
+                time.sleep(0.01)
                 
             except Exception as e:
                 print(f"Processing error: {e}")
                 continue
         
+        # Cleanup (runs on processing thread after loop exits)
         if self.cap:
             self.cap.release()
-        self.root.after(0, self.stop_btn.config, {"state": tk.DISABLED})
-        self.root.after(0, self.start_btn.config, {"state": tk.NORMAL})
+            self.cap = None
+        
+        def _cleanup_ui():
+            self.stop_btn.config(state=tk.DISABLED)
+            self.start_btn.config(state=tk.NORMAL)
+            if self.video_window:
+                try:
+                    self.video_window.destroy()
+                except:
+                    pass
+                self.video_window = None
+                self.canvas = None
+                self.image_item = None
+        
+        self.root.after(0, _cleanup_ui)
     
     def toggle_roi_selection(self):
         if not self.canvas:
