@@ -22,6 +22,9 @@ matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
 load_dotenv()
 
 ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
@@ -191,6 +194,14 @@ class CrowdCountingGUI:
             self.threshold_label.configure(text=f"{self.threshold_value.get():.3f}")
         self.threshold_slider.configure(command=update_threshold_label)
         
+        self.current_count_threshold = 100
+        def sync_threshold(*args):
+            try:
+                self.current_count_threshold = self.count_threshold.get()
+            except Exception:
+                pass
+        self.count_threshold.trace_add("write", sync_threshold)
+        
         # Count Threshold Input
         count_threshold_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
         count_threshold_frame.pack(fill=tk.X, pady=5)
@@ -244,10 +255,9 @@ class CrowdCountingGUI:
         self.alert_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         self.alert_frame.pack(fill=tk.X, pady=5)
         
-        self.alert_label = tk.Label(self.alert_frame, text="", 
+        self.alert_label = ctk.CTkLabel(self.alert_frame, text="", 
                                      font=("Arial", 14, "bold"), 
-                                     background=self.root.cget("bg"),
-                                     height=2)
+                                     height=50)
         self.alert_label.pack(fill=tk.X)
 
         self.canvas = None # Will be created in separate window
@@ -404,6 +414,10 @@ class CrowdCountingGUI:
         self.stop_btn.configure(state=tk.NORMAL)
         
         # Start processing thread
+        
+        self._thread_model_choice = self.model_choice.get()
+        self._thread_input_choice = self.input_choice.get()
+        
         self.processing_thread = threading.Thread(target=self.process_video, daemon=True)
         self.processing_thread.start()
     
@@ -534,7 +548,7 @@ class CrowdCountingGUI:
         while self.is_processing:
             ret, frame = self.cap.read()
             if not ret:
-                if self.input_choice.get() == "file":
+                if self._thread_input_choice == "file":
                     # Video ended, loop back
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
@@ -543,7 +557,7 @@ class CrowdCountingGUI:
             
             # Process frame based on model
             try:
-                if self.model_choice.get() == "csrnet":
+                if self._thread_model_choice == "csrnet":
                     processed_frame, count = self.process_csrnet(frame)
                 else:
                     processed_frame, count = self.process_yolo(frame)
@@ -564,12 +578,15 @@ class CrowdCountingGUI:
                     self.history_timestamps.pop(0)
                     self.history_counts.pop(0)
                 
-                # Trigger dashboard update if it's open
+                # Trigger dashboard update if it's open (throttle to avoid starving the main GUI thread)
                 if self.dashboard_window is not None and self.dashboard_window.winfo_exists():
-                    self.root.after(0, self.update_dashboard)
+                    if not hasattr(self, 'last_dashboard_update') or (time.time() - self.last_dashboard_update > 0.5):
+                        self.last_dashboard_update = time.time()
+                        self.root.after(0, self.update_dashboard)
                     
                 # Check count threshold and show alert if exceeded
-                threshold = self.count_threshold.get()
+                threshold = getattr(self, "current_count_threshold", 100)
+                    
                 # print(f"Count: {count:.1f}, Threshold: {threshold}, Alert Active: {self.alert_active}")  # Debug
                 if count > threshold:
                     if not self.alert_active:
@@ -582,9 +599,8 @@ class CrowdCountingGUI:
                 
                 # Update display on main thread (tkinter is not thread-safe)
                 frame_copy = processed_frame.copy()
-                self.root.after(0, self.display_frame, frame_copy)
-                self.root.after(0, self.update_status, f"Processing | Model: {self.model_choice.get().upper()} | Count: {count:.1f}")
-                self.root.after(0, self.fps_label.configure, {"text": f"FPS: {fps:.1f}"})
+                current_model_txt = self._thread_model_choice.upper()
+                self.root.after(0, self.update_main_gui, frame_copy, current_model_txt, count, fps)
                 
                 # Small delay to prevent flooding the event queue
                 time.sleep(0.01)
@@ -849,6 +865,12 @@ class CrowdCountingGUI:
     def update_status(self, message):
         self.status_label.configure(text=f"Status: {message}")
 
+    def update_main_gui(self, frame_copy, current_model_txt, count, fps):
+        """Batched GUI updates to prevent Tkinter event starvation"""
+        self.display_frame(frame_copy)
+        self.update_status(f"Processing | Model: {current_model_txt} | Count: {count:.1f}")
+        self.fps_label.configure(text=f"FPS: {fps:.1f}")
+
     def send_telegram_alert(self, message):
         if not self.telegram_enabled.get():
             return
@@ -887,6 +909,7 @@ class CrowdCountingGUI:
         try:
             if self.alert_label.cget("text") == "":
                 self.alert_label.configure(text="⚠️ ALERT: Count Threshold Exceeded! ⚠️")
+                self.alert_label.update_idletasks()
                 # Start flashing
                 self.flash_alert()
                 
@@ -913,7 +936,8 @@ class CrowdCountingGUI:
         """Hide the alert label when count is below threshold"""
         try:
             if self.alert_label.cget("text") != "":
-                self.alert_label.configure(text="", background=self.root.cget("bg"), foreground="black")
+                self.alert_label.configure(text="", fg_color="transparent", text_color="black")
+                self.alert_label.update_idletasks()
                 
                 # Stop sound
                 if self.sound_enabled:
@@ -933,7 +957,8 @@ class CrowdCountingGUI:
                 new_bg = "yellow"
                 new_fg = "black"
             
-            self.alert_label.configure(background=new_bg, foreground=new_fg)
+            self.alert_label.configure(fg_color=new_bg, text_color=new_fg)
+            self.alert_label.update_idletasks()
             self.root.after(500, self.flash_alert)  # Flash every 500ms
 
     def show_dashboard(self):
