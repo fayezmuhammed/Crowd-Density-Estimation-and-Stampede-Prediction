@@ -10,6 +10,12 @@ from models.csrnet import CSRNet
 from ultralytics import YOLO
 import scipy.ndimage
 import pygame 
+import requests
+import os
+import time
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class CrowdCountingGUI:
     def strip_module_prefix(self, state_dict):
@@ -38,6 +44,11 @@ class CrowdCountingGUI:
         self.alert_active = False  # Track if alert is currently showing
         self.flash_state = False # Track flash state for color toggling
         self.camera_index = tk.IntVar(value=0) # Camera index selection
+        
+        # Telegram Variables
+        self.telegram_enabled = tk.BooleanVar(value=False)
+        self.last_telegram_alert_time = 0
+        self.telegram_cooldown = 60  # seconds between alerts
         
         # ROI Variables
         self.roi_coords = None # (x1, y1, x2, y2)
@@ -180,6 +191,14 @@ class CrowdCountingGUI:
         self.cal_btn = ttk.Button(count_threshold_frame, text="Calibrate 1m", command=self.toggle_calibration)
         self.cal_btn.pack(side=tk.LEFT, padx=5)
 
+        # Telegram Integration Frame
+        telegram_frame = ttk.LabelFrame(control_frame, text="Telegram Alerts", padding="5")
+        telegram_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Checkbutton(telegram_frame, text="Enable Telegram Alerts", variable=self.telegram_enabled).pack(side=tk.LEFT, padx=5)
+        
+        self.test_telegram_btn = ttk.Button(telegram_frame, text="Test Alert", command=self.test_telegram_alert)
+        self.test_telegram_btn.pack(side=tk.LEFT, padx=5)
         
         # ROI Controls
         roi_frame = ttk.LabelFrame(control_frame, text="Region of Interest", padding="5")
@@ -523,7 +542,7 @@ class CrowdCountingGUI:
                 # print(f"Count: {count:.1f}, Threshold: {threshold}, Alert Active: {self.alert_active}")  # Debug
                 if count > threshold:
                     if not self.alert_active:
-                        self.root.after(0, self.show_alert)
+                        self.root.after(0, self.show_alert, count)
                         self.alert_active = True
                 else:
                     if self.alert_active:
@@ -799,13 +818,54 @@ class CrowdCountingGUI:
     def update_status(self, message):
         self.status_label.config(text=f"Status: {message}")
 
-    def show_alert(self):
+    def send_telegram_alert(self, message):
+        if not self.telegram_enabled.get():
+            return
+            
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        
+        if not token or not chat_id:
+            print("Telegram alert skipped: Token or Chat ID not configured in .env file.")
+            messagebox.showwarning("Telegram Error", "Please configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your .env file.")
+            self.telegram_enabled.set(False)
+            return
+
+        def _send():
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": message
+            }
+            try:
+                response = requests.post(url, json=payload, timeout=5)
+                if response.status_code != 200:
+                    print(f"Failed to send Telegram alert: {response.text}")
+            except Exception as e:
+                print(f"Error sending Telegram alert: {e}")
+        
+        # Run in background to avoid blocking GUI
+        threading.Thread(target=_send, daemon=True).start()
+
+    def test_telegram_alert(self):
+        self.send_telegram_alert("🧪 Test Alert from Crowd Counting System 🧪\n\nIf you are seeing this, your Telegram configuration is correct!")
+        messagebox.showinfo("Telegram Test", "Test alert dispatched! Check your Telegram app.")
+
+    def show_alert(self, count=None):
         """Show the alert label when count threshold is exceeded"""
         try:
             if self.alert_label.cget("text") == "":
                 self.alert_label.config(text="⚠️ ALERT: Count Threshold Exceeded! ⚠️")
                 # Start flashing
                 self.flash_alert()
+                
+                # Check Telegram Cooldown and Dispatch
+                current_time = time.time()
+                if current_time - self.last_telegram_alert_time >= self.telegram_cooldown:
+                    count_str = f"{count:.1f}" if count is not None else "Unknown"
+                    msg = f"🚨 CROWD ALERT! 🚨\n\nThe crowd count threshold has been exceeded!\nCurrent Count: {count_str}\nThreshold: {self.count_threshold.get()}"
+                    self.send_telegram_alert(msg)
+                    self.last_telegram_alert_time = current_time
                 
                 # Play sound
                 if self.sound_enabled:
