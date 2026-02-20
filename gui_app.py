@@ -14,7 +14,13 @@ import pygame
 import requests
 import os
 import time
+import time
 from dotenv import load_dotenv
+
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 load_dotenv()
 
@@ -67,6 +73,14 @@ class CrowdCountingGUI:
         self.roi_current = None
         self.original_threshold = None # To store threshold before scaling
         self.image_item = None # Canvas image item ID
+        
+        # Analytics Variables
+        self.history_timestamps = []
+        self.history_counts = []
+        self.dashboard_window = None
+        self.dashboard_canvas = None
+        self.dashboard_ax = None
+        self.start_analytics_time = time.time()
         
         # Display Scaling Variables
         self.display_scale = 1.0
@@ -222,6 +236,9 @@ class CrowdCountingGUI:
         self.stop_btn.pack(side=tk.LEFT, padx=5)
         
         ctk.CTkButton(button_frame, text="Exit", command=self.on_closing, width=100).pack(side=tk.LEFT, padx=5)
+        
+        self.analytics_btn = ctk.CTkButton(button_frame, text="Show Analytics", command=self.show_dashboard, width=120)
+        self.analytics_btn.pack(side=tk.LEFT, padx=5)
         
         # Alert Frame
         self.alert_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
@@ -537,6 +554,20 @@ class CrowdCountingGUI:
                 elapsed = time.time() - start_time
                 fps = frame_count / elapsed if elapsed > 0 else 0
                 
+                # Update Analytics Data
+                current_time = time.time() - self.start_analytics_time
+                self.history_timestamps.append(current_time)
+                self.history_counts.append(count)
+                
+                # Keep only last 100 data points to avoid memory bloat
+                if len(self.history_timestamps) > 100:
+                    self.history_timestamps.pop(0)
+                    self.history_counts.pop(0)
+                
+                # Trigger dashboard update if it's open
+                if self.dashboard_window is not None and self.dashboard_window.winfo_exists():
+                    self.root.after(0, self.update_dashboard)
+                    
                 # Check count threshold and show alert if exceeded
                 threshold = self.count_threshold.get()
                 # print(f"Count: {count:.1f}, Threshold: {threshold}, Alert Active: {self.alert_active}")  # Debug
@@ -904,6 +935,46 @@ class CrowdCountingGUI:
             
             self.alert_label.configure(background=new_bg, foreground=new_fg)
             self.root.after(500, self.flash_alert)  # Flash every 500ms
+
+    def show_dashboard(self):
+        """Creates or brings to front the live analytics dashboard."""
+        if self.dashboard_window is None or not self.dashboard_window.winfo_exists():
+            self.dashboard_window = ctk.CTkToplevel(self.root)
+            self.dashboard_window.title("Analytics Dashboard")
+            self.dashboard_window.geometry("600x400")
+            
+            # Setup Matplotlib Figure
+            fig = Figure(figsize=(6, 4), dpi=100, facecolor="#2b2b2b")
+            self.dashboard_ax = fig.add_subplot(111)
+            self.dashboard_ax.set_facecolor("#2b2b2b")
+            self.dashboard_ax.tick_params(colors="white")
+            self.dashboard_ax.xaxis.label.set_color("white")
+            self.dashboard_ax.yaxis.label.set_color("white")
+            self.dashboard_ax.title.set_color("white")
+            
+            self.dashboard_canvas = FigureCanvasTkAgg(fig, master=self.dashboard_window)
+            self.dashboard_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+            # Initial draw
+            self.update_dashboard()
+        else:
+            self.dashboard_window.focus()
+
+    def update_dashboard(self):
+        """Updates the plot with the latest data if the window is open."""
+        if self.dashboard_ax is not None and self.dashboard_canvas is not None:
+            self.dashboard_ax.clear()
+            self.dashboard_ax.plot(self.history_timestamps, self.history_counts, color="#00e676", linewidth=2)
+            self.dashboard_ax.set_title("Live Crowd Density", color="white", pad=10)
+            self.dashboard_ax.set_xlabel("Time (s)", color="white")
+            self.dashboard_ax.set_ylabel("Crowd Count", color="white")
+            
+            # Threshold line
+            if self.count_threshold.get() > 0:
+                self.dashboard_ax.axhline(y=self.count_threshold.get(), color='r', linestyle='--', linewidth=1, label="Threshold")
+                self.dashboard_ax.legend(loc="upper right")
+                
+            self.dashboard_canvas.draw()
 
     def on_closing(self):
         if self.is_processing:
