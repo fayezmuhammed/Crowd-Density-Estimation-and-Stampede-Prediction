@@ -4,3 +4,4 @@ best_csrnet_top.tar
 # Python
 __pycache__/
 *.pyc
+.env

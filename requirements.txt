@@ -8,3 +8,4 @@ scipy
 pygame
 requests
 python-dotenv
+customtkinter
