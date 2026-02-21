@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CrowdSafe AI Dashboard</title>
+    <!-- Tailwind CSS for robust, modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js for live graphing -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .critical { color: #ef4444; text-shadow: 0 0 10px rgba(239, 68, 68, 0.5); }
+        .warning { color: #f59e0b; text-shadow: 0 0 10px rgba(245, 158, 11, 0.5); }
+        .safe { color: #10b981; text-shadow: 0 0 10px rgba(16, 185, 129, 0.5); }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8 font-sans">
+    <div class="max-w-6xl mx-auto space-y-6">
+        <!-- Header -->
+        <header class="flexflex-col md:flex-row justify-between items-center glass-panel p-6 rounded-2xl">
+            <div>
+                <h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
+                    CrowdSafe AI Observer
+                </h1>
+                <p class="text-slate-400 mt-1">Live Density Monitoring & Analytics</p>
+            </div>
+            <div class="mt-4 md:mt-0 flex items-center space-x-3 bg-slate-800/50 px-4 py-2 rounded-full border border-slate-700">
+                <div id="connection-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                <span id="connection-status" class="text-sm font-medium text-slate-300">Live Connection</span>
+            </div>
+        </header>
+
+        <!-- Main Stats Row -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Current Count Card -->
+            <div class="glass-panel p-6 rounded-2xl flex flex-col justify-center items-center relative overflow-hidden">
+                <div class="absolute -right-10 -top-10 w-32 h-32 bg-blue-500/10 rounded-full blur-2xl"></div>
+                <h2 class="text-slate-400 font-semibold mb-2">Current Crowd Count</h2>
+                <div class="text-6xl font-black tabular-nums tracking-tighter safe transition-colors duration-500" id="live-count">
+                    --
+                </div>
+                <div class="mt-4 text-sm text-slate-500 flex items-center">
+                    <span class="mr-2">Status:</span>
+                    <span id="status-badge" class="px-2 py-1 rounded bg-emerald-500/20 text-emerald-400 font-medium">Safe</span>
+                </div>
+            </div>
+
+            <!-- Parameters Card -->
+            <div class="glass-panel p-6 rounded-2xl col-span-1 md:col-span-2">
+                <h2 class="text-slate-400 font-semibold mb-4 border-b border-slate-700 pb-2">System Parameters</h2>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-slate-800/40 p-4 rounded-xl">
+                        <p class="text-xs text-slate-500 uppercase tracking-wider mb-1">Active Model</p>
+                        <p class="text-lg font-medium text-blue-300" id="active-model">Loading...</p>
+                    </div>
+                    <div class="bg-slate-800/40 p-4 rounded-xl">
+                        <p class="text-xs text-slate-500 uppercase tracking-wider mb-1">Processing State</p>
+                        <p class="text-lg font-medium" id="app-state">Checking...</p>
+                    </div>
+                    <div class="bg-slate-800/40 p-4 rounded-xl">
+                        <p class="text-xs text-slate-500 uppercase tracking-wider mb-1">Warning Threshold</p>
+                        <p class="text-lg font-medium text-amber-400" id="warn-thresh">--</p>
+                    </div>
+                    <div class="bg-slate-800/40 p-4 rounded-xl">
+                        <p class="text-xs text-slate-500 uppercase tracking-wider mb-1">Critical Threshold</p>
+                        <p class="text-lg font-medium text-red-400" id="crit-thresh">--</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chart Section -->
+        <div class="glass-panel p-6 rounded-2xl h-96">
+            <h2 class="text-slate-400 font-semibold mb-4">Live Density Trend</h2>
+            <div class="w-full h-[300px] relative">
+                <canvas id="densityChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Chart Configuration
+        const ctx = document.getElementById('densityChart').getContext('2d');
+        
+        // Create gradients
+        const gradientBlue = ctx.createLinearGradient(0, 0, 0, 400);
+        gradientBlue.addColorStop(0, 'rgba(56, 189, 248, 0.5)'); // sky-400
+        gradientBlue.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+        
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [], // Timestamps
+                datasets: [{
+                    label: 'Crowd Count',
+                    data: [],
+                    borderColor: '#38bdf8', // sky-400
+                    backgroundColor: gradientBlue,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHitRadius: 10,
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 }, // Disable animation for live updates
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                        titleColor: '#f8fafc',
+                        bodyColor: '#38bdf8',
+                        borderColor: 'rgba(255,255,255,0.1)',
+                        borderWidth: 1
+                    }
+                },
+                scales: {
+                    x: {
+                        display: false // Hide X axis for cleaner look
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.05)',
+                            drawBorder: false,
+                        },
+                        ticks: { color: '#94a3b8' }
+                    }
+                },
+                interaction: {
+                    mode: 'nearest',
+                    axis: 'x',
+                    intersect: false
+                }
+            }
+        });
+
+        const maxDataPoints = 60; // Keep last 60 seconds
+
+        // Fetch Data Function
+        async function updateDashboard() {
+            try {
+                // Fetch stats
+                const response = await fetch('/api/stats');
+                if (!response.ok) throw new Error('Network response was not ok');
+                const data = await response.json();
+
+                // Update UI Elements
+                const countEl = document.getElementById('live-count');
+                const stateEl = document.getElementById('app-state');
+                const badgeEl = document.getElementById('status-badge');
+                
+                countEl.innerText = data.current_count !== null ? Math.round(data.current_count) : '--';
+                
+                if (data.is_processing) {
+                    stateEl.innerText = 'Active (Processing)';
+                    stateEl.className = 'text-lg font-medium text-emerald-400';
+                } else {
+                    stateEl.innerText = 'Idle / Stopped';
+                    stateEl.className = 'text-lg font-medium text-slate-400';
+                    countEl.innerText = '--'; // Clear count if not processing
+                }
+
+                document.getElementById('active-model').innerText = data.model || 'None';
+                document.getElementById('warn-thresh').innerText = data.thresholds.warning || '--';
+                document.getElementById('crit-thresh').innerText = data.thresholds.critical || '--';
+
+                // Determine Status Color
+                countEl.className = 'text-6xl font-black tabular-nums tracking-tighter transition-colors duration-500';
+                if (data.current_count >= data.thresholds.critical) {
+                    countEl.classList.add('critical');
+                    badgeEl.innerText = 'Critical';
+                    badgeEl.className = 'px-2 py-1 rounded bg-red-500/20 text-red-400 font-medium animate-pulse';
+                } else if (data.current_count >= data.thresholds.warning) {
+                    countEl.classList.add('warning');
+                    badgeEl.innerText = 'Warning';
+                    badgeEl.className = 'px-2 py-1 rounded bg-amber-500/20 text-amber-400 font-medium';
+                } else if (data.is_processing) {
+                    countEl.classList.add('safe');
+                    badgeEl.innerText = 'Safe';
+                    badgeEl.className = 'px-2 py-1 rounded bg-emerald-500/20 text-emerald-400 font-medium';
+                } else {
+                    countEl.classList.add('text-slate-600');
+                    badgeEl.innerText = 'Offline';
+                    badgeEl.className = 'px-2 py-1 rounded bg-slate-800 text-slate-500 font-medium';
+                }
+
+                // Update Chart (only if processing)
+                if (data.is_processing && data.current_count !== null) {
+                    const now = new Date().toLocaleTimeString();
+                    chart.data.labels.push(now);
+                    chart.data.datasets[0].data.push(data.current_count);
+
+                    if (chart.data.labels.length > maxDataPoints) {
+                        chart.data.labels.shift();
+                        chart.data.datasets[0].data.shift();
+                    }
+                    chart.update();
+                }
+
+                // Update connection status
+                document.getElementById('connection-dot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse';
+                document.getElementById('connection-status').innerText = 'Live Connection';
+
+            } catch (error) {
+                console.error('Fetch error:', error);
+                // Handle Disconnection UI
+                document.getElementById('connection-dot').className = 'w-2.5 h-2.5 rounded-full bg-red-500';
+                document.getElementById('connection-status').innerText = 'Disconnected';
+                document.getElementById('live-count').innerText = '--';
+                document.getElementById('live-count').className = 'text-6xl font-black tabular-nums tracking-tighter text-slate-600 transition-colors duration-500';
+                document.getElementById('status-badge').innerText = 'Offline';
+                document.getElementById('status-badge').className = 'px-2 py-1 rounded bg-slate-800 text-slate-500 font-medium';
+                 document.getElementById('app-state').innerText = 'Server Unreachable';
+                 document.getElementById('app-state').className = 'text-lg font-medium text-red-500';
+            }
+        }
+
+        // Poll every 1 second
+        setInterval(updateDashboard, 1000);
+        // Initial fetch
+        updateDashboard();
+    </script>
+</body>
+</html>

@@ -9,3 +9,5 @@ pygame
 requests
 python-dotenv
 customtkinter
+pyttsx3
+flask
