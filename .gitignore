@@ -5,3 +5,5 @@ best_csrnet_top.tar
 __pycache__/
 *.pyc
 .env
+
+.DS_Store
