@@ -38,10 +38,11 @@ class CrowdCountingGUI:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Crowd Counting Application")
-        self.root.geometry("650x500") # slightly wider
+        self.root.title("CrowdSafe AI | Density Estimation & Monitoring")
+        self.root.geometry("850x650") # Larger window for the new layout
         self.root.resizable(True, True)
         self.video_window = None # Toplevel window for video
+        self.canvas = None # Video canvas object
         
         # Variables (We can still map Ctk to these TK variables)
         self.model_choice = ctk.StringVar(value="csrnet")
@@ -62,13 +63,6 @@ class CrowdCountingGUI:
         self.last_telegram_alert_time = 0
         self.telegram_cooldown = 60  # seconds between alerts
         
-        # ROI Variables
-        self.roi_coords = None # (x1, y1, x2, y2)
-        self.roi_active = False
-        self.roi_select_active = False
-        self.roi_start = None
-        self.roi_current = None
-        self.original_threshold = None # To store threshold before scaling
         self.roi_coords = None # (x1, y1, x2, y2)
         self.roi_active = False
         self.roi_select_active = False
@@ -133,145 +127,178 @@ class CrowdCountingGUI:
         self.create_widgets()
         
     def create_widgets(self):
-        # Main container
-        main_frame = ctk.CTkFrame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Configure grid layout (1 row, 2 columns)
+        self.root.grid_columnconfigure(1, weight=1)
+        self.root.grid_rowconfigure(0, weight=1)
+
+        # 1. Sidebar Frame
+        self.sidebar_frame = ctk.CTkFrame(self.root, width=200, corner_radius=0)
+        self.sidebar_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
+        self.sidebar_frame.grid_rowconfigure(4, weight=1)
+
+        ctk.CTkLabel(self.sidebar_frame, text="CrowdSafe AI", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, padx=20, pady=(20, 10))
         
-        # Control Panel
-        control_frame = ctk.CTkFrame(main_frame)
-        control_frame.pack(fill=tk.X, pady=(0, 10))
-        # Add heading label since CTkFrame doesn't have native LabelFrame text
-        ctk.CTkLabel(control_frame, text="Configuration", font=("Arial", 14, "bold")).pack(pady=5)
+        self.start_btn = ctk.CTkButton(self.sidebar_frame, text="🚀 Start Processing", command=self.start_processing, 
+                                       fg_color="#28a745", hover_color="#218838", font=ctk.CTkFont(weight="bold"))
+        self.start_btn.grid(row=1, column=0, padx=20, pady=10)
         
+        self.stop_btn = ctk.CTkButton(self.sidebar_frame, text="⏹️ Stop", command=self.stop_processing, 
+                                      state=tk.DISABLED, fg_color="#dc3545", hover_color="#c82333")
+        self.stop_btn.grid(row=2, column=0, padx=20, pady=10)
+
+        self.analytics_btn = ctk.CTkButton(self.sidebar_frame, text="📊 Analytics", command=self.show_dashboard)
+        self.analytics_btn.grid(row=3, column=0, padx=20, pady=10)
+
+        ctk.CTkButton(self.sidebar_frame, text="🚪 Exit", command=self.on_closing, fg_color="transparent", border_width=2).grid(row=5, column=0, padx=20, pady=20)
+
+        # 2. Main Content Frame
+        self.content_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        self.content_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        self.content_frame.grid_columnconfigure(0, weight=1)
+        self.content_frame.grid_rowconfigure(0, weight=1)
+
+        # 3. Tabview for Settings
+        self.tabview = ctk.CTkTabview(self.content_frame, width=600)
+        self.tabview.grid(row=0, column=0, sticky="nsew")
+        self.tabview.add("General")
+        self.tabview.add("Advanced")
+        self.tabview.add("Alerts & ROI")
+
+        # --- Tab: General ---
+        self.setup_general_tab()
+
+        # --- Tab: Advanced ---
+        self.setup_advanced_tab()
+
+        # --- Tab: Alerts & ROI ---
+        self.setup_alerts_tab()
+
+        # 4. Alert Panel (Persistent at bottom of content)
+        self.alert_frame = ctk.CTkFrame(self.content_frame, height=80, fg_color="transparent")
+        self.alert_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        
+        self.alert_label = ctk.CTkLabel(self.alert_frame, text="", font=ctk.CTkFont(size=16, weight="bold"), height=50)
+        self.alert_label.pack(fill=tk.X, expand=True)
+
+        # 5. Status Bar
+        self.status_frame = ctk.CTkFrame(self.root, height=30, corner_radius=0)
+        self.status_frame.grid(row=1, column=1, sticky="ew")
+        
+        self.status_label = ctk.CTkLabel(self.status_frame, text="Status: Ready", anchor="w")
+        self.status_label.pack(side=tk.LEFT, padx=20)
+        
+        self.fps_label = ctk.CTkLabel(self.status_frame, text="FPS: -", width=80)
+        self.fps_label.pack(side=tk.RIGHT, padx=20)
+
+    def setup_general_tab(self):
+        tab = self.tabview.tab("General")
+        tab.grid_columnconfigure(0, weight=1)
+
         # Model Selection
-        model_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
-        model_frame.pack(fill=tk.X, pady=5)
-        ctk.CTkLabel(model_frame, text="Select Model:", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=5)
-        ctk.CTkRadioButton(model_frame, text="CSRNet (Density)", variable=self.model_choice, value="csrnet").pack(side=tk.LEFT, padx=5)
-        ctk.CTkRadioButton(model_frame, text="YOLOv8 (Objects)", variable=self.model_choice, value="yolo").pack(side=tk.LEFT, padx=5)
+        model_group = ctk.CTkFrame(tab, fg_color="transparent")
+        model_group.pack(fill=tk.X, pady=10, padx=20)
+        ctk.CTkLabel(model_group, text="Inference Model", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+        
+        model_radio_frame = ctk.CTkFrame(model_group, fg_color="transparent")
+        model_radio_frame.pack(fill=tk.X, pady=5)
+        ctk.CTkRadioButton(model_radio_frame, text="CSRNet (High Precision Density)", variable=self.model_choice, value="csrnet").pack(side=tk.LEFT, padx=(0, 20))
+        ctk.CTkRadioButton(model_radio_frame, text="YOLOv8 (Fast Object Detection)", variable=self.model_choice, value="yolo").pack(side=tk.LEFT)
 
         # View Selection
-        view_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
-        view_frame.pack(fill=tk.X, pady=5)
-        ctk.CTkLabel(view_frame, text="Select View: ", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=5)
-        ctk.CTkRadioButton(view_frame, text="Front View", variable=self.view_choice, value="front").pack(side=tk.LEFT, padx=5)
-        ctk.CTkRadioButton(view_frame, text="Top View", variable=self.view_choice, value="top").pack(side=tk.LEFT, padx=5)
+        view_group = ctk.CTkFrame(tab, fg_color="transparent")
+        view_group.pack(fill=tk.X, pady=10, padx=20)
+        ctk.CTkLabel(view_group, text="Camera Perspective", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
+        view_radio_frame = ctk.CTkFrame(view_group, fg_color="transparent")
+        view_radio_frame.pack(fill=tk.X, pady=5)
+        ctk.CTkRadioButton(view_radio_frame, text="Front/Wide View", variable=self.view_choice, value="front").pack(side=tk.LEFT, padx=(0, 20))
+        ctk.CTkRadioButton(view_radio_frame, text="Top/Aereal View", variable=self.view_choice, value="top").pack(side=tk.LEFT)
+
         # Input Selection
-        input_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
-        input_frame.pack(fill=tk.X, pady=5)
-        ctk.CTkLabel(input_frame, text="Select Input:", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=5)
-        ctk.CTkRadioButton(input_frame, text="Video File", variable=self.input_choice, value="file", command=self.on_input_change).pack(side=tk.LEFT, padx=5)
-        ctk.CTkRadioButton(input_frame, text="Camera", variable=self.input_choice, value="camera", command=self.on_input_change).pack(side=tk.LEFT, padx=5)
+        input_group = ctk.CTkFrame(tab, fg_color="transparent")
+        input_group.pack(fill=tk.X, pady=10, padx=20)
+        ctk.CTkLabel(input_group, text="Video Source", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
-        # Camera Index Selection (Mock Spinbox)
-        ctk.CTkLabel(input_frame, text="Index:").pack(side=tk.LEFT, padx=(10, 2))
-        self.camera_entry = ctk.CTkEntry(input_frame, textvariable=self.camera_index, width=40)
-        self.camera_entry.pack(side=tk.LEFT, padx=2)
+        input_radio_frame = ctk.CTkFrame(input_group, fg_color="transparent")
+        input_radio_frame.pack(fill=tk.X, pady=5)
+        ctk.CTkRadioButton(input_radio_frame, text="Local File", variable=self.input_choice, value="file", command=self.on_input_change).pack(side=tk.LEFT, padx=(0, 20))
+        ctk.CTkRadioButton(input_radio_frame, text="Live Camera", variable=self.input_choice, value="camera", command=self.on_input_change).pack(side=tk.LEFT)
+        
+        ctk.CTkLabel(input_radio_frame, text="Camera Index:").pack(side=tk.LEFT, padx=(20, 5))
+        self.camera_entry = ctk.CTkEntry(input_radio_frame, textvariable=self.camera_index, width=50)
+        self.camera_entry.pack(side=tk.LEFT)
 
         # File Selection
-        file_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
-        file_frame.pack(fill=tk.X, pady=5)
-        
-        ctk.CTkLabel(file_frame, text="Video File:").pack(side=tk.LEFT, padx=5)
-        self.file_entry = ctk.CTkEntry(file_frame, textvariable=self.video_path, width=300)
-        self.file_entry.pack(side=tk.LEFT, padx=5)
-        self.browse_btn = ctk.CTkButton(file_frame, text="Browse...", width=80, command=self.browse_file)
-        self.browse_btn.pack(side=tk.LEFT, padx=5)
+        self.file_frame_content = ctk.CTkFrame(tab, fg_color="transparent")
+        self.file_frame_content.pack(fill=tk.X, pady=10, padx=20)
+        self.file_entry = ctk.CTkEntry(self.file_frame_content, textvariable=self.video_path, placeholder_text="Path to video file...")
+        self.file_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.browse_btn = ctk.CTkButton(self.file_frame_content, text="📁 Browse", width=100, command=self.browse_file)
+        self.browse_btn.pack(side=tk.LEFT)
 
-        # CSRNet Threshold Slider
-        self.threshold_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
-        self.threshold_frame.pack(fill=tk.X, pady=5)
+    def setup_advanced_tab(self):
+        tab = self.tabview.tab("Advanced")
         
-        ctk.CTkLabel(self.threshold_frame, text="CSRNet Threshold:", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=5)
-        self.threshold_slider = ctk.CTkSlider(self.threshold_frame, from_=0.001, to=0.100, variable=self.threshold_value, width=200)
-        self.threshold_slider.pack(side=tk.LEFT, padx=5)
-        self.threshold_label = ctk.CTkLabel(self.threshold_frame, text=f"{self.threshold_value.get():.3f}")
-        self.threshold_label.pack(side=tk.LEFT, padx=5)
+        # Density Threshold
+        thresh_group = ctk.CTkFrame(tab, fg_color="transparent")
+        thresh_group.pack(fill=tk.X, pady=20, padx=20)
+        ctk.CTkLabel(thresh_group, text="Density Sensitivity Threshold", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(thresh_group, text="Adjusts how strictly the CSRNet model counts dark/noisy areas.", font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w")
         
-        # Update threshold label when slider moves
-        def update_threshold_label(*args):
-            self.threshold_label.configure(text=f"{self.threshold_value.get():.3f}")
-        self.threshold_slider.configure(command=update_threshold_label)
-        
-        self.current_count_threshold = 100
-        def sync_threshold(*args):
-            try:
-                self.current_count_threshold = self.count_threshold.get()
-            except Exception:
-                pass
-        self.count_threshold.trace_add("write", sync_threshold)
-        
-        # Count Threshold Input
-        count_threshold_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
-        count_threshold_frame.pack(fill=tk.X, pady=5)
-        
-        ctk.CTkLabel(count_threshold_frame, text="Count Alert Threshold:", font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=5)
-        self.count_threshold_entry = ctk.CTkEntry(count_threshold_frame, textvariable=self.count_threshold, width=60)
-        self.count_threshold_entry.pack(side=tk.LEFT, padx=5)
-        ctk.CTkLabel(count_threshold_frame, text="(Alert when count > value)").pack(side=tk.LEFT, padx=5)
-        
-        # Calibration Button
-        self.cal_btn = ctk.CTkButton(count_threshold_frame, text="Calibrate 1m", command=self.toggle_calibration, width=100)
-        self.cal_btn.pack(side=tk.LEFT, padx=5)
+        slider_row = ctk.CTkFrame(thresh_group, fg_color="transparent")
+        slider_row.pack(fill=tk.X, pady=10)
+        self.threshold_slider = ctk.CTkSlider(slider_row, from_=0.001, to=0.100, variable=self.threshold_value)
+        self.threshold_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.threshold_label = ctk.CTkLabel(slider_row, text=f"{self.threshold_value.get():.3f}", width=50)
+        self.threshold_label.pack(side=tk.LEFT)
+        self.threshold_slider.configure(command=lambda val: self.threshold_label.configure(text=f"{float(val):.3f}"))
 
-        # Telegram Integration Frame
-        telegram_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
-        telegram_frame.pack(fill=tk.X, pady=5)
+        # Calibration
+        calib_group = ctk.CTkFrame(tab, fg_color="transparent")
+        calib_group.pack(fill=tk.X, pady=20, padx=20)
+        ctk.CTkLabel(calib_group, text="Distance Calibration", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(calib_group, text="Define a 1-meter reference on the video for accurate area calculations.", font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w")
         
-        ctk.CTkCheckBox(telegram_frame, text="Enable Telegram Alerts", variable=self.telegram_enabled).pack(side=tk.LEFT, padx=5)
-        self.test_telegram_btn = ctk.CTkButton(telegram_frame, text="Test Alert", command=self.test_telegram_alert, width=100)
-        self.test_telegram_btn.pack(side=tk.LEFT, padx=5)
-        
-        # ROI Controls
-        roi_frame = ctk.CTkFrame(control_frame)
-        roi_frame.pack(fill=tk.X, pady=5)
-        ctk.CTkLabel(roi_frame, text="Region of Interest", font=("Arial", 12, "bold")).pack(pady=2)
-        roi_btns = ctk.CTkFrame(roi_frame, fg_color="transparent")
-        roi_btns.pack(pady=5)
-        
-        self.select_roi_btn = ctk.CTkButton(roi_btns, text="Select ROI", command=self.toggle_roi_selection, width=100)
-        self.select_roi_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.reset_roi_btn = ctk.CTkButton(roi_btns, text="Reset ROI", command=self.reset_roi, state=tk.DISABLED, width=100)
-        self.reset_roi_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Control Buttons
-        button_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
-        button_frame.pack(fill=tk.X, pady=10)
-        
-        self.start_btn = ctk.CTkButton(button_frame, text="Start Processing", command=self.start_processing, width=150, fg_color="green", hover_color="darkgreen")
-        self.start_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.stop_btn = ctk.CTkButton(button_frame, text="Stop", command=self.stop_processing, state=tk.DISABLED, width=100, fg_color="red", hover_color="darkred")
-        self.stop_btn.pack(side=tk.LEFT, padx=5)
-        
-        ctk.CTkButton(button_frame, text="Exit", command=self.on_closing, width=100).pack(side=tk.LEFT, padx=5)
-        
-        self.analytics_btn = ctk.CTkButton(button_frame, text="Show Analytics", command=self.show_dashboard, width=120)
-        self.analytics_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Alert Frame
-        self.alert_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        self.alert_frame.pack(fill=tk.X, pady=5)
-        
-        self.alert_label = ctk.CTkLabel(self.alert_frame, text="", 
-                                     font=("Arial", 14, "bold"), 
-                                     height=50)
-        self.alert_label.pack(fill=tk.X)
+        self.cal_btn = ctk.CTkButton(calib_group, text="📏 Calibrate 1m", command=self.toggle_calibration, width=200)
+        self.cal_btn.pack(pady=10, anchor="w")
 
-        self.canvas = None # Will be created in separate window
+    def setup_alerts_tab(self):
+        tab = self.tabview.tab("Alerts & ROI")
+
+        # Count Threshold
+        alert_group = ctk.CTkFrame(tab, fg_color="transparent")
+        alert_group.pack(fill=tk.X, pady=10, padx=20)
+        ctk.CTkLabel(alert_group, text="Crowd Limit Threshold", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
-        # Status Bar
-        status_frame = ctk.CTkFrame(main_frame)
-        status_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=5)
+        limit_row = ctk.CTkFrame(alert_group, fg_color="transparent")
+        limit_row.pack(fill=tk.X, pady=5)
+        self.count_threshold_entry = ctk.CTkEntry(limit_row, textvariable=self.count_threshold, width=100)
+        self.count_threshold_entry.pack(side=tk.LEFT, padx=(0, 10))
+        ctk.CTkLabel(limit_row, text="Trigger alert when count exceeds this value.").pack(side=tk.LEFT)
+
+        # Telegram
+        tg_group = ctk.CTkFrame(tab, fg_color="transparent")
+        tg_group.pack(fill=tk.X, pady=10, padx=20)
+        ctk.CTkLabel(tg_group, text="External Notifications", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
-        self.status_label = ctk.CTkLabel(status_frame, text="Status: Ready", anchor="w")
-        self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+        tg_row = ctk.CTkFrame(tg_group, fg_color="transparent")
+        tg_row.pack(fill=tk.X, pady=5)
+        ctk.CTkCheckBox(tg_row, text="Enable 📱 Telegram Alerts", variable=self.telegram_enabled).pack(side=tk.LEFT, padx=(0, 20))
+        self.test_telegram_btn = ctk.CTkButton(tg_row, text="Test Send", command=self.test_telegram_alert, width=100)
+        self.test_telegram_btn.pack(side=tk.LEFT)
+
+        # ROI
+        roi_group = ctk.CTkFrame(tab, fg_color="transparent")
+        roi_group.pack(fill=tk.X, pady=10, padx=20)
+        ctk.CTkLabel(roi_group, text="Region of Interest (ROI)", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(roi_group, text="Focus monitoring on a specific sub-area of the camera feed.", font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w")
         
-        self.fps_label = ctk.CTkLabel(status_frame, text="FPS: -", width=60)
-        self.fps_label.pack(side=tk.RIGHT, padx=10)
-        
+        roi_row = ctk.CTkFrame(roi_group, fg_color="transparent")
+        roi_row.pack(fill=tk.X, pady=10)
+        self.select_roi_btn = ctk.CTkButton(roi_row, text="🎯 Select ROI", command=self.toggle_roi_selection, width=150)
+        self.select_roi_btn.pack(side=tk.LEFT, padx=(0, 10))
+        self.reset_roi_btn = ctk.CTkButton(roi_row, text="🔄 Reset", command=self.reset_roi, state=tk.DISABLED, width=100)
+        self.reset_roi_btn.pack(side=tk.LEFT)        
 
         
     def on_input_change(self):
@@ -292,6 +319,14 @@ class CrowdCountingGUI:
         if filename:
             self.video_path.set(filename)
     
+    def set_controls_state(self, state):
+        """Helper to disable/enable settings tabs during processing"""
+        self.tabview.configure(state=state)
+        # Explicitly disable inputs that might still be clickable
+        self.browse_btn.configure(state=state)
+        self.select_roi_btn.configure(state=state)
+        self.cal_btn.configure(state=state)
+
     def load_model(self):
         try:
             view = self.view_choice.get()
@@ -413,6 +448,9 @@ class CrowdCountingGUI:
         self.start_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
         
+        # Disable settings during processing
+        self.set_controls_state(tk.DISABLED)
+        
         # Start processing thread
         
         self._thread_model_choice = self.model_choice.get()
@@ -425,6 +463,7 @@ class CrowdCountingGUI:
         self.is_processing = False
         self.start_btn.configure(state=tk.NORMAL)
         self.stop_btn.configure(state=tk.DISABLED)
+        self.set_controls_state(tk.NORMAL)
         self.update_status("Processing stopped")
         # Cleanup is handled by the processing thread when it exits
     
