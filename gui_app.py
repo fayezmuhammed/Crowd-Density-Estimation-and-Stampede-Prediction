@@ -199,8 +199,10 @@ class CrowdCountingGUI:
             except:
                 warn_val, crit_val, model_val = 50, 100, "Unknown"
 
+            count_val = float(self.latest_count) if self.latest_count is not None else None
+
             data = {
-                "current_count": self.latest_count,
+                "current_count": count_val,
                 "is_processing": self.is_processing,
                 "model": model_val,
                 "thresholds": {
@@ -483,7 +485,7 @@ class CrowdCountingGUI:
                 
                 # Check view to decide Batch Norm
                 use_bn = True if view == "front" else False
-                self.csrnet_model = CSRNet(batch_norm=use_bn).to(self.device)
+                self.csrnet_model = CSRNet(load_pretrained=False, batch_norm=use_bn).to(self.device)
                 
                 # Load weights handling both .pth (state_dict) and .tar (checkpoint dict)
                 checkpoint = torch.load(path, map_location=self.device, weights_only=False)
@@ -751,13 +753,13 @@ class CrowdCountingGUI:
             
         # Draw ROI
         if self.roi_active and self.roi_coords:
-             cv2.rectangle(frame, (self.roi_coords[0], self.roi_coords[1]), (self.roi_coords[2], self.roi_coords[3]), (0, 255, 0), 2)
+             cv2.rectangle(frame_padded, (self.roi_coords[0], self.roi_coords[1]), (self.roi_coords[2], self.roi_coords[3]), (0, 255, 0), 2)
              
         # Add count text
-        cv2.putText(frame, f"Count: {count}", (30, 50),
+        cv2.putText(frame_padded, f"Count: {count}", (30, 50),
                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3, cv2.LINE_AA)
         
-        return frame, count
+        return frame_padded, count
     
     def process_video(self):
         import time
@@ -1149,12 +1151,13 @@ class CrowdCountingGUI:
         try:
             current_text = self.alert_label.cget("text")
             
-            if level == "CRITICAL" and "CRITICAL" not in current_text:
-                self.alert_label.configure(text=f"🚨 CRITICAL: Crowd Limit Exceeded! (Count: {int(count)}) 🚨")
-                self.alert_active = True
-                self.flash_alert()
+            if level == "CRITICAL":
+                if "CRITICAL" not in current_text:
+                    self.alert_label.configure(text=f"🚨 CRITICAL: Crowd Limit Exceeded! (Count: {int(count)}) 🚨")
+                    self.alert_active = True
+                    self.flash_alert()
                 
-                # Check Telegram Cooldown and Dispatch
+                # Check Telegram Cooldown and Dispatch (moved outside the "if CRITICAL not in current_text" block)
                 current_time = time.time()
                 if current_time - self.last_telegram_alert_time >= self.telegram_cooldown:
                     count_str = f"{count:.1f}" if count is not None else "Unknown"
