@@ -22,9 +22,8 @@ matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-import sqlite3
 import datetime
-import csv
+# import csv # Removed as per user request
 import pyttsx3 # For voice alerts
 
 from flask import Flask, jsonify, send_file
@@ -37,8 +36,17 @@ load_dotenv()
 
 ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
 ctk.set_default_color_theme("blue")  # Themes: "blue" (standard), "green", "dark-blue"
-
 class CrowdCountingGUI:
+    def get_safe_val(self, var, type_func=int, default=0):
+        """Safely gets numeric value from a StringVar, returning default if empty/invalid."""
+        try:
+            val = str(var.get()).strip()
+            if not val:
+                return default
+            return type_func(val)
+        except:
+            return default
+
     def strip_module_prefix(self, state_dict):
         if any(k.startswith('module.') for k in state_dict.keys()):
             return {k.replace('module.', '', 1): v for k, v in state_dict.items()}
@@ -47,7 +55,7 @@ class CrowdCountingGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("CrowdSafe AI | Density Estimation & Monitoring")
-        self.root.geometry("850x650") # Larger window for the new layout
+        self.root.geometry("1200x700") # Wider for 3-column layout
         self.root.resizable(True, True)
         self.video_window = None # Toplevel window for video
         self.canvas = None # Video canvas object
@@ -61,10 +69,11 @@ class CrowdCountingGUI:
         self.cap = None
         self.current_frame = None
         self.threshold_value = ctk.DoubleVar(value=0.022)  # Default CSRNet threshold
-        self.count_threshold = ctk.IntVar(value=100)  # Default count threshold for alerts
+        self.warning_threshold = ctk.StringVar(value="50") # Default warning threshold
+        self.count_threshold = ctk.StringVar(value="100")  # Default count threshold for alerts
         self.alert_active = False  # Track if alert is currently showing
         self.flash_state = False # Track flash state for color toggling
-        self.camera_index = ctk.IntVar(value=0) # Camera index selection
+        self.camera_index = ctk.StringVar(value="0") # Camera index selection
         
         # Telegram Variables
         self.telegram_enabled = tk.BooleanVar(value=False)
@@ -74,7 +83,8 @@ class CrowdCountingGUI:
         # Smart Alert Variables
         self.sustained_warning_time = 0
         self.sustained_critical_time = 0
-        self.alert_sustain_duration = ctk.DoubleVar(value=3.0) # Seconds to sustain before triggering
+        self.alert_sustain_duration = ctk.StringVar(value="3.0") # Seconds to sustain before triggering
+        self.voice_alerts_enabled = tk.BooleanVar(value=True)
         
         self.roi_coords = None # (x1, y1, x2, y2)
         self.roi_active = False
@@ -84,13 +94,10 @@ class CrowdCountingGUI:
         self.original_threshold = None # To store threshold before scaling
         self.image_item = None # Canvas image item ID
         
-        # Analytics Variables
-        self.history_timestamps = []
-        self.history_counts = []
         self.dashboard_window = None
         self.dashboard_canvas = None
         self.dashboard_ax = None
-        self.start_analytics_time = time.time()
+        # self.start_analytics_time = time.time() # Removed
         
         # Display Scaling Variables
         self.display_scale = 1.0
@@ -100,6 +107,8 @@ class CrowdCountingGUI:
         # Calibration Variables
         self.calibration_active = False
         self.calibration_points = []
+
+        # Model paths
 
 
         
@@ -136,8 +145,8 @@ class CrowdCountingGUI:
             print(f"Audio initialization failed: {e}")
             self.sound_enabled = False
 
-        # Initialize SQLite DB
-        self.init_db()
+        # Initialize SQLite DB - Removed
+        # self.init_db()
 
         # Initialize Pyttsx3 for Voice Alerts
         try:
@@ -157,22 +166,22 @@ class CrowdCountingGUI:
         # Create GUI
         self.create_widgets()
         
-    def init_db(self):
-        """Initializes the SQLite database for historical recording."""
-        try:
-            self.conn = sqlite3.connect('history.db', check_same_thread=False)
-            self.cursor = self.conn.cursor()
-            self.cursor.execute('''
-                CREATE TABLE IF NOT EXISTS crowd_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    model TEXT,
-                    count REAL
-                )
-            ''')
-            self.conn.commit()
-        except Exception as e:
-            print(f"Database initialization error: {e}")
+    # def init_db(self): # Removed
+    #     """Initializes the SQLite database for historical recording."""
+    #     try:
+    #         self.conn = sqlite3.connect('history.db', check_same_thread=False)
+    #         self.cursor = self.conn.cursor()
+    #         self.cursor.execute('''
+    #             CREATE TABLE IF NOT EXISTS crowd_data (
+    #                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+    #                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    #                 model TEXT,
+    #                 count REAL
+    #             )
+    #         ''')
+    #         self.conn.commit()
+    #     except Exception as e:
+    #         print(f"Database initialization error: {e}")
 
     def start_web_server(self):
         """Starts a lightweight Flask server on a daemon thread for external Tailscale access."""
@@ -192,12 +201,9 @@ class CrowdCountingGUI:
         @app.route('/api/stats')
         def api_stats():
             # Gather state from Tkinter variables safely
-            try:
-                warn_val = self.warning_threshold.get()
-                crit_val = self.count_threshold.get()
-                model_val = self.model_choice.get().upper()
-            except:
-                warn_val, crit_val, model_val = 50, 100, "Unknown"
+            warn_val = self.get_safe_val(self.warning_threshold, int, 50)
+            crit_val = self.get_safe_val(self.count_threshold, int, 100)
+            model_val = self.model_choice.get().upper()
 
             count_val = float(self.latest_count) if self.latest_count is not None else None
 
@@ -219,69 +225,69 @@ class CrowdCountingGUI:
         print("Web Dashboard running on http://0.0.0.0:5001 (accessible via Tailscale)")
 
     def create_widgets(self):
-        # Configure grid layout (1 row, 2 columns)
-        self.root.grid_columnconfigure(1, weight=1)
+        # Configure grid layout (1 row, 1 column)
+        self.root.grid_columnconfigure(0, weight=1)
         self.root.grid_rowconfigure(0, weight=1)
 
-        # 1. Sidebar Frame
-        self.sidebar_frame = ctk.CTkFrame(self.root, width=200, corner_radius=0)
-        self.sidebar_frame.grid(row=0, column=0, rowspan=2, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(4, weight=1)
-
-        ctk.CTkLabel(self.sidebar_frame, text="CrowdSafe AI", font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, padx=20, pady=(20, 10))
-        
-        self.start_btn = ctk.CTkButton(self.sidebar_frame, text="🚀 Start Processing", command=self.start_processing, 
-                                       fg_color="#28a745", hover_color="#218838", font=ctk.CTkFont(weight="bold"))
-        self.start_btn.grid(row=1, column=0, padx=20, pady=10)
-        
-        self.stop_btn = ctk.CTkButton(self.sidebar_frame, text="⏹️ Stop", command=self.stop_processing, 
-                                      state=tk.DISABLED, fg_color="#dc3545", hover_color="#c82333")
-        self.stop_btn.grid(row=2, column=0, padx=20, pady=10)
-
-        self.analytics_btn = ctk.CTkButton(self.sidebar_frame, text="📊 Analytics", command=self.show_dashboard)
-        self.analytics_btn.grid(row=3, column=0, padx=20, pady=10)
-
-        # Appearance Mode Toggle
-        self.appearance_mode_label = ctk.CTkLabel(self.sidebar_frame, text="Appearance Mode:", anchor="w")
-        self.appearance_mode_label.grid(row=4, column=0, padx=20, pady=(20, 0))
-        self.appearance_mode_optionemenu = ctk.CTkOptionMenu(self.sidebar_frame, values=["System", "Dark", "Light"],
-                                                                       command=self.change_appearance_mode_event)
-        self.appearance_mode_optionemenu.grid(row=5, column=0, padx=20, pady=(10, 20))
-
-        ctk.CTkButton(self.sidebar_frame, text="🚪 Exit", command=self.on_closing, fg_color="transparent", border_width=2).grid(row=6, column=0, padx=20, pady=20)
-        
-        # 2. Main Content Frame
+        # 1. Main Content Frame
         self.content_frame = ctk.CTkFrame(self.root, fg_color="transparent")
-        self.content_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        self.content_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         self.content_frame.grid_columnconfigure(0, weight=1)
-        self.content_frame.grid_rowconfigure(0, weight=1)
+        self.content_frame.grid_rowconfigure(1, weight=1) # Row 1 has settings
 
-        # 3. Tabview for Settings
-        self.tabview = ctk.CTkTabview(self.content_frame, width=600)
-        self.tabview.grid(row=0, column=0, sticky="nsew")
-        self.tabview.add("General")
-        self.tabview.add("Advanced")
-        self.tabview.add("Alerts & ROI")
+        # 2.5 Top Control Panel
+        self.top_control_panel = ctk.CTkFrame(self.content_frame, height=60, fg_color="transparent")
+        self.top_control_panel.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        
+        self.start_btn = ctk.CTkButton(self.top_control_panel, text="🚀 Start Processing", command=self.start_processing, 
+                                       fg_color="#2ecc71", hover_color="#27ae60", font=ctk.CTkFont(size=15, weight="bold"), width=200, height=40)
+        self.start_btn.pack(side=tk.LEFT, padx=(5, 10))
 
-        # --- Tab: General ---
-        self.setup_general_tab()
+        self.stop_btn = ctk.CTkButton(self.top_control_panel, text="⏹️ Stop", command=self.stop_processing, 
+                                      fg_color="#e74c3c", hover_color="#c0392b", font=ctk.CTkFont(size=15, weight="bold"), width=150, height=40)
+        self.stop_btn.pack(side=tk.LEFT)
+        self.stop_btn.configure(state=tk.DISABLED)
+        
+        # Exit and Appearance in Top Panel (Right Side)
+        self.exit_btn = ctk.CTkButton(self.top_control_panel, text="🚪 Exit", command=self.on_closing, fg_color="transparent", border_width=1, width=80)
+        self.exit_btn.pack(side=tk.RIGHT, padx=5)
+        
+        self.appearance_mode_optionemenu = ctk.CTkOptionMenu(self.top_control_panel, values=["System", "Dark", "Light"],
+                                                                       command=self.change_appearance_mode_event, width=120)
+        self.appearance_mode_optionemenu.pack(side=tk.RIGHT, padx=10)
+        ctk.CTkLabel(self.top_control_panel, text="Mode:").pack(side=tk.RIGHT)
 
-        # --- Tab: Advanced ---
-        self.setup_advanced_tab()
+        # 2. 3-Column Settings Layout
+        self.settings_container = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        self.settings_container.grid(row=1, column=0, sticky="nsew")
+        self.settings_container.grid_columnconfigure((0, 1, 2), weight=1, uniform="col")
+        self.settings_container.grid_rowconfigure(0, weight=1)
 
-        # --- Tab: Alerts & ROI ---
-        self.setup_alerts_tab()
+        # Column 1: General
+        self.col_general = ctk.CTkFrame(self.settings_container, corner_radius=10)
+        self.col_general.grid(row=0, column=0, padx=5, sticky="nsew")
+        self.setup_general_tab(self.col_general)
+        
+        # Column 2: Advanced
+        self.col_advanced = ctk.CTkFrame(self.settings_container, corner_radius=10)
+        self.col_advanced.grid(row=0, column=1, padx=5, sticky="nsew")
+        self.setup_advanced_tab(self.col_advanced)
+        
+        # Column 3: Alerts & ROI
+        self.col_alerts = ctk.CTkFrame(self.settings_container, corner_radius=10)
+        self.col_alerts.grid(row=0, column=2, padx=5, sticky="nsew")
+        self.setup_alerts_tab(self.col_alerts)
 
-        # 4. Alert Panel (Persistent at bottom of content)
+        # 3. Alert Panel (Persistent at bottom of content)
         self.alert_frame = ctk.CTkFrame(self.content_frame, height=80, fg_color="transparent")
-        self.alert_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        self.alert_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         
         self.alert_label = ctk.CTkLabel(self.alert_frame, text="", font=ctk.CTkFont(size=16, weight="bold"), height=50)
         self.alert_label.pack(fill=tk.X, expand=True)
 
-        # 5. Status Bar
+        # 4. Status Bar
         self.status_frame = ctk.CTkFrame(self.root, height=30, corner_radius=0)
-        self.status_frame.grid(row=1, column=1, sticky="ew")
+        self.status_frame.grid(row=1, column=0, sticky="ew")
         
         self.status_label = ctk.CTkLabel(self.status_frame, text="Status: Ready", anchor="w")
         self.status_label.pack(side=tk.LEFT, padx=20)
@@ -289,57 +295,67 @@ class CrowdCountingGUI:
         self.fps_label = ctk.CTkLabel(self.status_frame, text="FPS: -", width=80)
         self.fps_label.pack(side=tk.RIGHT, padx=20)
 
-    def setup_general_tab(self):
-        tab = self.tabview.tab("General")
-        tab.grid_columnconfigure(0, weight=1)
+    def setup_general_tab(self, parent):
+        # Header
+        ctk.CTkLabel(parent, text="📋 General", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=20, pady=(15, 10))
+        
+        container = ctk.CTkFrame(parent, fg_color="transparent")
+        container.pack(fill=tk.X)
+        container.grid_columnconfigure(0, weight=1)
 
         # Model Selection
-        model_group = ctk.CTkFrame(tab, fg_color="transparent")
+        model_group = ctk.CTkFrame(container, fg_color="transparent")
         model_group.pack(fill=tk.X, pady=10, padx=20)
         ctk.CTkLabel(model_group, text="Inference Model", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
         model_radio_frame = ctk.CTkFrame(model_group, fg_color="transparent")
         model_radio_frame.pack(fill=tk.X, pady=5)
-        ctk.CTkRadioButton(model_radio_frame, text="CSRNet (High Precision Density)", variable=self.model_choice, value="csrnet").pack(side=tk.LEFT, padx=(0, 20))
-        ctk.CTkRadioButton(model_radio_frame, text="YOLOv8 (Fast Object Detection)", variable=self.model_choice, value="yolo").pack(side=tk.LEFT)
+        ctk.CTkRadioButton(model_radio_frame, text="CSRNet", variable=self.model_choice, value="csrnet").pack(anchor="w", pady=2)
+        ctk.CTkRadioButton(model_radio_frame, text="YOLOv8", variable=self.model_choice, value="yolo").pack(anchor="w", pady=2)
 
         # View Selection
-        view_group = ctk.CTkFrame(tab, fg_color="transparent")
+        view_group = ctk.CTkFrame(container, fg_color="transparent")
         view_group.pack(fill=tk.X, pady=10, padx=20)
         ctk.CTkLabel(view_group, text="Camera Perspective", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
         view_radio_frame = ctk.CTkFrame(view_group, fg_color="transparent")
         view_radio_frame.pack(fill=tk.X, pady=5)
-        ctk.CTkRadioButton(view_radio_frame, text="Front/Wide View", variable=self.view_choice, value="front").pack(side=tk.LEFT, padx=(0, 20))
-        ctk.CTkRadioButton(view_radio_frame, text="Top/Aereal View", variable=self.view_choice, value="top").pack(side=tk.LEFT)
+        ctk.CTkRadioButton(view_radio_frame, text="Front View", variable=self.view_choice, value="front").pack(anchor="w", pady=2)
+        ctk.CTkRadioButton(view_radio_frame, text="Top View", variable=self.view_choice, value="top").pack(anchor="w", pady=2)
 
         # Input Selection
-        input_group = ctk.CTkFrame(tab, fg_color="transparent")
+        input_group = ctk.CTkFrame(container, fg_color="transparent")
         input_group.pack(fill=tk.X, pady=10, padx=20)
         ctk.CTkLabel(input_group, text="Video Source", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
         input_radio_frame = ctk.CTkFrame(input_group, fg_color="transparent")
         input_radio_frame.pack(fill=tk.X, pady=5)
-        ctk.CTkRadioButton(input_radio_frame, text="Local File", variable=self.input_choice, value="file", command=self.on_input_change).pack(side=tk.LEFT, padx=(0, 20))
-        ctk.CTkRadioButton(input_radio_frame, text="Live Camera", variable=self.input_choice, value="camera", command=self.on_input_change).pack(side=tk.LEFT)
+        ctk.CTkRadioButton(input_radio_frame, text="Local File", variable=self.input_choice, value="file", command=self.on_input_change).pack(anchor="w", pady=2)
+        ctk.CTkRadioButton(input_radio_frame, text="Live Camera", variable=self.input_choice, value="camera", command=self.on_input_change).pack(anchor="w", pady=2)
         
-        ctk.CTkLabel(input_radio_frame, text="Camera Index:").pack(side=tk.LEFT, padx=(20, 5))
-        self.camera_entry = ctk.CTkEntry(input_radio_frame, textvariable=self.camera_index, width=50)
+        cam_idx_row = ctk.CTkFrame(input_radio_frame, fg_color="transparent")
+        cam_idx_row.pack(fill=tk.X, pady=2)
+        ctk.CTkLabel(cam_idx_row, text="Index:").pack(side=tk.LEFT, padx=(0, 5))
+        self.camera_entry = ctk.CTkEntry(cam_idx_row, textvariable=self.camera_index, width=50)
         self.camera_entry.pack(side=tk.LEFT)
 
         # File Selection
-        self.file_frame_content = ctk.CTkFrame(tab, fg_color="transparent")
+        self.file_frame_content = ctk.CTkFrame(container, fg_color="transparent")
         self.file_frame_content.pack(fill=tk.X, pady=10, padx=20)
         self.file_entry = ctk.CTkEntry(self.file_frame_content, textvariable=self.video_path, placeholder_text="Path to video file...")
         self.file_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.browse_btn = ctk.CTkButton(self.file_frame_content, text="📁 Browse", width=100, command=self.browse_file)
         self.browse_btn.pack(side=tk.LEFT)
 
-    def setup_advanced_tab(self):
-        tab = self.tabview.tab("Advanced")
+    def setup_advanced_tab(self, parent):
+        # Header
+        ctk.CTkLabel(parent, text="⚙️ Advanced", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=20, pady=(15, 10))
         
+        container = ctk.CTkFrame(parent, fg_color="transparent")
+        container.pack(fill=tk.X)
+
         # Original Precision Group
-        prec_group = ctk.CTkFrame(tab, fg_color="transparent")
+        prec_group = ctk.CTkFrame(container, fg_color="transparent")
         prec_group.pack(fill=tk.X, pady=10, padx=20)
         ctk.CTkLabel(prec_group, text="Density Sensitivity (CSRNet)", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
@@ -350,42 +366,37 @@ class CrowdCountingGUI:
         self.threshold_label = ctk.CTkLabel(slider_row, text=f"{self.threshold_value.get():.3f}", width=50)
         self.threshold_label.pack(side=tk.LEFT)
         self.thresh_slider.configure(command=lambda val: self.threshold_label.configure(text=f"{float(val):.3f}"))
-        ctk.CTkLabel(prec_group, text="Adjusts how strictly the CSRNet model counts dark/noisy areas.", font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w")
+        ctk.CTkLabel(prec_group, text="Adjusts how strictly the CSRNet model counts dark/noisy areas.", font=ctk.CTkFont(size=11), text_color="gray", wraplength=320, justify="left").pack(anchor="w")
 
         # New Vision Analytics Group
-        visual_group = ctk.CTkFrame(tab, fg_color="transparent")
+        visual_group = ctk.CTkFrame(container, fg_color="transparent")
         visual_group.pack(fill=tk.X, pady=(20, 10), padx=20)
         ctk.CTkLabel(visual_group, text="Live Vision Analytics", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
         v_row1 = ctk.CTkFrame(visual_group, fg_color="transparent")
         v_row1.pack(fill=tk.X, pady=5)
         
-        self.enable_blur = tk.BooleanVar(value=False)
-        ctk.CTkCheckBox(v_row1, text="🌫️ Privacy Mode (Blur Faces)", variable=self.enable_blur).pack(side=tk.LEFT, padx=(0, 20))
-        
         self.enable_heatmap = tk.BooleanVar(value=False)
         ctk.CTkCheckBox(v_row1, text="🔥 Density Heatmap Overlay", variable=self.enable_heatmap).pack(side=tk.LEFT, padx=(0, 20))
-        
-        v_row2 = ctk.CTkFrame(visual_group, fg_color="transparent")
-        v_row2.pack(fill=tk.X, pady=5)
-        
-        self.enable_social_distancing = tk.BooleanVar(value=False)
-        ctk.CTkCheckBox(v_row2, text="📏 Social Distancing Warning (YOLO Only)", variable=self.enable_social_distancing).pack(side=tk.LEFT)
 
         # Calibration
-        cal_group = ctk.CTkFrame(tab, fg_color="transparent")
+        cal_group = ctk.CTkFrame(container, fg_color="transparent")
         cal_group.pack(fill=tk.X, pady=20, padx=20)
         ctk.CTkLabel(cal_group, text="Distance Calibration", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(cal_group, text="Define a 1-meter reference on the video for accurate area calculations.", font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w")
+        ctk.CTkLabel(cal_group, text="Define a 1-meter reference on the video for accurate area calculations.", font=ctk.CTkFont(size=11), text_color="gray", wraplength=320, justify="left").pack(anchor="w")
         
         self.cal_btn = ctk.CTkButton(cal_group, text="📏 Calibrate 1m", command=self.toggle_calibration, width=200)
         self.cal_btn.pack(pady=10, anchor="w")
 
-    def setup_alerts_tab(self):
-        tab = self.tabview.tab("Alerts & ROI")
+    def setup_alerts_tab(self, parent):
+        # Header
+        ctk.CTkLabel(parent, text="🚨 Alerts & ROI", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=20, pady=(15, 10))
+        
+        container = ctk.CTkFrame(parent, fg_color="transparent")
+        container.pack(fill=tk.X)
 
         # Count Thresholds
-        alert_group = ctk.CTkFrame(tab, fg_color="transparent")
+        alert_group = ctk.CTkFrame(container, fg_color="transparent")
         alert_group.pack(fill=tk.X, pady=10, padx=20)
         ctk.CTkLabel(alert_group, text="Crowd Limit Thresholds", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
@@ -394,7 +405,6 @@ class CrowdCountingGUI:
         
         # Warning Threshold
         ctk.CTkLabel(limit_row, text="Warning Level:").pack(side=tk.LEFT, padx=(0, 5))
-        self.warning_threshold = ctk.IntVar(value=50)
         self.warning_entry = ctk.CTkEntry(limit_row, textvariable=self.warning_threshold, width=60)
         self.warning_entry.pack(side=tk.LEFT, padx=(0, 20))
         
@@ -409,10 +419,9 @@ class CrowdCountingGUI:
         ctk.CTkLabel(time_row, text="Sustain Duration (sec):").pack(side=tk.LEFT, padx=(0, 5))
         self.sustain_entry = ctk.CTkEntry(time_row, textvariable=self.alert_sustain_duration, width=60)
         self.sustain_entry.pack(side=tk.LEFT, padx=(0, 20))
-        ctk.CTkLabel(time_row, text="Delay before alert triggers (prevents false alarms)").pack(side=tk.LEFT)
-
+    
         # Telegram
-        tg_group = ctk.CTkFrame(tab, fg_color="transparent")
+        tg_group = ctk.CTkFrame(container, fg_color="transparent")
         tg_group.pack(fill=tk.X, pady=10, padx=20)
         ctk.CTkLabel(tg_group, text="External Notifications", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
         
@@ -421,17 +430,16 @@ class CrowdCountingGUI:
         ctk.CTkCheckBox(tg_row, text="Enable 📱 Telegram Alerts", variable=self.telegram_enabled).pack(side=tk.LEFT, padx=(0, 20))
         
         # Voice Alerts Toggle
-        self.voice_alerts_enabled = tk.BooleanVar(value=True)
         ctk.CTkCheckBox(tg_row, text="🎤 Voice Alerts", variable=self.voice_alerts_enabled).pack(side=tk.LEFT, padx=(0, 20))
         
         self.test_telegram_btn = ctk.CTkButton(tg_row, text="Test Send", command=self.test_telegram_alert, width=100)
         self.test_telegram_btn.pack(side=tk.LEFT)
 
         # ROI
-        roi_group = ctk.CTkFrame(tab, fg_color="transparent")
+        roi_group = ctk.CTkFrame(container, fg_color="transparent")
         roi_group.pack(fill=tk.X, pady=10, padx=20)
         ctk.CTkLabel(roi_group, text="Region of Interest (ROI)", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(roi_group, text="Focus monitoring on a specific sub-area of the camera feed.", font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w")
+        ctk.CTkLabel(roi_group, text="Focus monitoring on a specific sub-area of the camera feed.", font=ctk.CTkFont(size=11), text_color="gray", wraplength=320, justify="left").pack(anchor="w")
         
         roi_row = ctk.CTkFrame(roi_group, fg_color="transparent")
         roi_row.pack(fill=tk.X, pady=10)
@@ -462,12 +470,8 @@ class CrowdCountingGUI:
             self.video_path.set(filename)
     
     def set_controls_state(self, state):
-        """Helper to disable/enable settings tabs during processing"""
-        self.tabview.configure(state=state)
-        # Explicitly disable inputs that might still be clickable
-        self.browse_btn.configure(state=state)
-        self.select_roi_btn.configure(state=state)
-        self.cal_btn.configure(state=state)
+        """Helper to disable/enable settings during processing"""
+        pass # Simplified for now as CTkScrollableFrame doesn't have a single state
 
     def load_model(self):
         try:
@@ -566,10 +570,7 @@ class CrowdCountingGUI:
         
         # Open video source
         if self.input_choice.get() == "camera":
-            try:
-                idx = self.camera_index.get()
-            except:
-                idx = 0
+            idx = self.get_safe_val(self.camera_index, int, 0)
             print(f"Attempting to open camera index: {idx}")
             import platform
             if platform.system() == "Darwin":
@@ -607,6 +608,11 @@ class CrowdCountingGUI:
         self.stop_btn.configure(state=tk.DISABLED)
         self.set_controls_state(tk.NORMAL)
         self.update_status("Processing stopped")
+        
+        # Explicitly clear alerts and sustained timing
+        self.sustained_warning_time = 0
+        self.sustained_critical_time = 0
+        self.hide_alert()
         # Cleanup is handled by the processing thread when it exits
     
     def resize_with_padding(self, image):
@@ -709,46 +715,9 @@ class CrowdCountingGUI:
              
         count = len(filtered_boxes)
         
-        # Social Distancing check (if model is calibrated)
-        if self.enable_social_distancing.get() and len(self.calibration_points) == 2:
-            p1, p2 = self.calibration_points
-            pixel_distance_1m = np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
-            
-            # Ensure pixel_distance_1m is not zero to avoid division by zero
-            if pixel_distance_1m > 0:
-                safe_distance_pixels = pixel_distance_1m * 1.5 # 1.5 meters safe distance
-                
-                centers = []
-                for box in filtered_boxes:
-                    centers.append(((box[0] + box[2])/2, (box[1] + box[3])/2))
-                    
-                # Naive O(n^2) distance check for demonstration
-                for i in range(len(centers)):
-                    for j in range(i+1, len(centers)):
-                        dist = np.sqrt((centers[i][0]-centers[j][0])**2 + (centers[i][1]-centers[j][1])**2)
-                        if dist < safe_distance_pixels:
-                            # Draw warning line
-                            cv2.line(frame_padded, (int(centers[i][0]), int(centers[i][1])), 
-                                     (int(centers[j][0]), int(centers[j][1])), (0, 0, 255), 2)
-        
-        # Draw bounding boxes (and apply blur)
+        # Draw bounding boxes
         for box in filtered_boxes:
             x1, y1, x2, y2 = map(int, box)
-            
-            # Apply PII Privacy Blurring (Faces) if enabled
-            if getattr(self, "enable_blur", None) and self.enable_blur.get():
-                head_y2 = y1 + int((y2 - y1) * 0.3) # Top 30% of box
-                # Apply blur safely within frame bounds
-                if y1 >= 0 and head_y2 < frame_padded.shape[0] and x1 >= 0 and x2 < frame_padded.shape[1]:
-                    roi = frame_padded[y1:head_y2, x1:x2]
-                    if roi.size > 0:
-                        # Ensure kernel size is odd and >= 3
-                        kw, kh = max(3, (x2-x1)//2), max(3, (head_y2-y1)//2)
-                        kw = kw if kw % 2 != 0 else kw + 1
-                        kh = kh if kh % 2 != 0 else kh + 1
-                        blur = cv2.GaussianBlur(roi, (kw, kh), 0)
-                        frame_padded[y1:head_y2, x1:x2] = blur
-            
             cv2.rectangle(frame_padded, (x1, y1), (x2, y2), (0, 255, 0), 2)
             
         # Draw ROI
@@ -789,26 +758,21 @@ class CrowdCountingGUI:
                 elapsed = time.time() - start_time
                 fps = frame_count / elapsed if elapsed > 0 else 0
                 
-                # Record data to DB
-                try:
-                    if hasattr(self, 'cursor'):
-                        self.cursor.execute("INSERT INTO crowd_data (model, count) VALUES (?, ?)", 
-                                            (self._thread_model_choice, float(count)))
-                        self.conn.commit()
-                except Exception as e:
-                    print(f"DB Write Error: {e}")
+                # Record data - Removed
+                # try:
+                #     if hasattr(self, 'cursor'):
+                #         self.cursor.execute("INSERT INTO crowd_data (model, count) VALUES (?, ?)", 
+                #                             (self._thread_model_choice, float(count)))
+                #         self.conn.commit()
+                # except Exception as e:
+                #     print(f"DB Write Error: {e}")
                     
                 # Update latest count for Web API
                 self.latest_count = count
-                    
-                # Update Analytics Data (in-memory for live chart)
-                current_time = time.time() - self.start_analytics_time
-                self.history_timestamps.append(current_time)
-                self.history_counts.append(count)
                 
-                if len(self.history_timestamps) > 100:
-                    self.history_timestamps.pop(0)
-                    self.history_counts.pop(0)
+                # Check for Alerts (Telegram, Voice, Visual)
+                self.check_alerts(count)
+                    
                 
                 # Update display on main thread (tkinter is not thread-safe)
                 frame_copy = processed_frame.copy()
@@ -952,12 +916,14 @@ class CrowdCountingGUI:
             )
             
             if response:
-                self.count_threshold.set(suggested_threshold)
+                self.count_threshold.set(str(int(suggested_threshold)))
                 self.update_status(f"Threshold set to {suggested_threshold}")
             
             # Clean up
             self.canvas.delete("calib_mark")
             self.stop_calibration()
+
+    # --- Coordinates Translation ---
 
     def get_model_coords(self, canvas_x, canvas_y):
         """Convert canvas coordinates to model/image coordinates"""
@@ -1055,7 +1021,7 @@ class CrowdCountingGUI:
         
         # Restore threshold
         if self.original_threshold is not None:
-            self.count_threshold.set(self.original_threshold)
+            self.count_threshold.set(str(self.original_threshold))
             self.original_threshold = None
             
         self.update_status("ROI Reset")
@@ -1069,10 +1035,10 @@ class CrowdCountingGUI:
             
             # Store original if not already stored
             if self.original_threshold is None:
-                self.original_threshold = self.count_threshold.get()
+                self.original_threshold = self.get_safe_val(self.count_threshold, int, 100)
             
             new_threshold = int(self.original_threshold * ratio)
-            self.count_threshold.set(max(1, new_threshold)) # Minimum 1
+            self.count_threshold.set(str(max(1, new_threshold))) # Minimum 1
             print(f"Threshold scaled from {self.original_threshold} to {new_threshold} (Ratio: {ratio:.2f})")
 
     def update_status(self, message):
@@ -1086,6 +1052,7 @@ class CrowdCountingGUI:
 
     def send_telegram_alert(self, message):
         if not self.telegram_enabled.get():
+            print("Telegram alert skipped: Disabled in settings.")
             return
             
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -1096,6 +1063,8 @@ class CrowdCountingGUI:
             messagebox.showwarning("Telegram Error", "Please configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your .env file.")
             self.telegram_enabled.set(False)
             return
+
+        print(f"Telegram alert triggered: {message.splitlines()[0]}") # Print first line
 
         def _send():
             url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -1119,15 +1088,16 @@ class CrowdCountingGUI:
 
     def check_alerts(self, count):
         """Checks thresholds and triggers appropriate alerts based on logic"""
-        warning_level = self.warning_threshold.get()
-        critical_level = self.count_threshold.get()
-        sustain_req = self.alert_sustain_duration.get()
+        warning_level = self.get_safe_val(self.warning_threshold, int, 50)
+        critical_level = self.get_safe_val(self.count_threshold, int, 100)
+        sustain_req = self.get_safe_val(self.alert_sustain_duration, float, 3.0)
         current_time = time.time()
 
         # Handle Critical Logic
         if count >= critical_level:
             if self.sustained_critical_time == 0:
                 self.sustained_critical_time = current_time # Start tracking
+                print(f"Tracking sustained critical count... ({count:.1f} >= {critical_level})")
             elif current_time - self.sustained_critical_time >= sustain_req:
                 self.show_alert(count, level="CRITICAL")
         else:
@@ -1144,6 +1114,8 @@ class CrowdCountingGUI:
             
         # Hide if completely normal
         if count < warning_level and count < critical_level:
+            if self.alert_active:
+                print(f"Alert Reset (Count: {count:.1f} < {warning_level})")
             self.hide_alert()
 
     def show_alert(self, count=None, level="CRITICAL"):
@@ -1157,13 +1129,17 @@ class CrowdCountingGUI:
                     self.alert_active = True
                     self.flash_alert()
                 
-                # Check Telegram Cooldown and Dispatch (moved outside the "if CRITICAL not in current_text" block)
+                # Check Telegram Cooldown and Dispatch
                 current_time = time.time()
-                if current_time - self.last_telegram_alert_time >= self.telegram_cooldown:
+                time_since_last = current_time - self.last_telegram_alert_time
+                if time_since_last >= self.telegram_cooldown:
                     count_str = f"{count:.1f}" if count is not None else "Unknown"
-                    msg = f"🚨 CRITICAL CROWD ALERT! 🚨\n\nThe crowd count threshold has been exceeded!\nCurrent Count: {count_str}\nThreshold: {self.count_threshold.get()}"
+                    msg = f"🚨 CRITICAL CROWD ALERT! 🚨\n\nThe crowd count threshold has been exceeded!\nCurrent Count: {count_str}\nThreshold: {self.get_safe_val(self.count_threshold, int, 100)}"
                     self.send_telegram_alert(msg)
                     self.last_telegram_alert_time = current_time
+                else:
+                    remaining = self.telegram_cooldown - time_since_last
+                    # Optional: print(f"Telegram cooldown active: {remaining:.0f}s left")
                     
                 # Action Voice TTS locally if enabled
                 if getattr(self, "voice_enabled", False) and getattr(self, "voice_alerts_enabled", None) and self.voice_alerts_enabled.get():
@@ -1196,15 +1172,15 @@ class CrowdCountingGUI:
             print(f"Error showing alert: {e}")
 
     def hide_alert(self):
-        """Hide the alert label when count is below threshold"""
+        """Hide the alert label and reset alert state"""
         try:
-            if self.alert_label.cget("text") != "":
-                self.alert_label.configure(text="", fg_color="transparent", text_color="black")
-                self.alert_label.update_idletasks()
-                
-                # Stop sound
-                if self.sound_enabled:
-                    pygame.mixer.music.stop()
+            self.alert_active = False # Immediately stop flashing
+            self.alert_label.configure(text="", fg_color="transparent", text_color="black")
+            self.alert_label.update_idletasks()
+            
+            # Stop sound
+            if self.sound_enabled:
+                pygame.mixer.music.stop()
         except Exception as e:
             print(f"Error hiding alert: {e}")
 
@@ -1224,82 +1200,15 @@ class CrowdCountingGUI:
             self.alert_label.update_idletasks()
             self.root.after(500, self.flash_alert)  # Flash every 500ms
 
-    def show_dashboard(self):
-        """Creates or brings to front the live analytics dashboard."""
-        if self.dashboard_window is None or not self.dashboard_window.winfo_exists():
-            self.dashboard_window = ctk.CTkToplevel(self.root)
-            self.dashboard_window.title("Analytics Dashboard")
-            self.dashboard_window.geometry("600x450")
-            
-            # Top Controls Frame
-            ctrl_frame = ctk.CTkFrame(self.dashboard_window, fg_color="transparent")
-            ctrl_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
-            
-            self.export_btn = ctk.CTkButton(ctrl_frame, text="📥 Export CSV", command=self.export_csv, width=120)
-            self.export_btn.pack(side=tk.RIGHT)
-            
-            # Setup Matplotlib Figure
-            fig = Figure(figsize=(6, 4), dpi=100, facecolor="#2b2b2b")
-            self.dashboard_ax = fig.add_subplot(111)
-            self.dashboard_ax.set_facecolor("#2b2b2b")
-            self.dashboard_ax.tick_params(colors="white")
-            self.dashboard_ax.xaxis.label.set_color("white")
-            self.dashboard_ax.yaxis.label.set_color("white")
-            self.dashboard_ax.title.set_color("white")
-            
-            self.dashboard_canvas = FigureCanvasTkAgg(fig, master=self.dashboard_window)
-            self.dashboard_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-            
-            # Initial draw
-            self.update_dashboard()
-        else:
-            self.dashboard_window.focus()
-
-    def update_dashboard(self):
-        """Updates the plot with the latest data if the window is open."""
-        if self.dashboard_ax is not None and self.dashboard_canvas is not None:
-            self.dashboard_ax.clear()
-            self.dashboard_ax.plot(self.history_timestamps, self.history_counts, color="#00e676", linewidth=2)
-            self.dashboard_ax.set_title("Live Crowd Density", color="white", pad=10)
-            self.dashboard_ax.set_xlabel("Time (s)", color="white")
-            self.dashboard_ax.set_ylabel("Crowd Count", color="white")
-            
-            # Threshold line
-            if self.count_threshold.get() > 0:
-                self.dashboard_ax.axhline(y=self.count_threshold.get(), color='r', linestyle='--', linewidth=1, label="Threshold")
-                self.dashboard_ax.legend(loc="upper right")
-                
-            self.dashboard_canvas.draw()
-
-    def export_csv(self):
-        """Exports the SQLite historical data to a CSV file."""
-        try:
-            filename = filedialog.asksaveasfilename(
-                defaultextension=".csv",
-                initialfile=f"crowd_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
-                title="Save Crowd Report"
-            )
-            
-            if filename:
-                self.cursor.execute("SELECT timestamp, model, count FROM crowd_data ORDER BY timestamp DESC")
-                rows = self.cursor.fetchall()
-                
-                with open(filename, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(["Timestamp", "Model", "Density Count"])
-                    writer.writerows(rows)
-                messagebox.showinfo("Export Successful", f"Data exported to:\n{filename}")
-        except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export data: {e}")
+    # show_dashboard, update_dashboard, and export_csv methods removed.
 
     def on_closing(self):
         if self.is_processing:
             self.stop_processing()
         if self.sound_enabled:
             pygame.mixer.quit()
-        if hasattr(self, 'conn'):
-            self.conn.close()
+        # if hasattr(self, 'conn'):
+        #     self.conn.close()
         self.root.destroy()
         
 if __name__ == "__main__":
