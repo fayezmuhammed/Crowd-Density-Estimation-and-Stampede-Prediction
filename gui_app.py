@@ -98,6 +98,7 @@ class CrowdCountingGUI:
         self.dashboard_canvas = None
         self.dashboard_ax = None
         # self.start_analytics_time = time.time() # Removed
+        self.enable_heatmap = tk.BooleanVar(value=True) # Always on for CSRNet evaluation
         
         # Display Scaling Variables
         self.display_scale = 1.0
@@ -371,13 +372,8 @@ class CrowdCountingGUI:
         # New Vision Analytics Group
         visual_group = ctk.CTkFrame(container, fg_color="transparent")
         visual_group.pack(fill=tk.X, pady=(20, 10), padx=20)
-        ctk.CTkLabel(visual_group, text="Live Vision Analytics", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
-        
-        v_row1 = ctk.CTkFrame(visual_group, fg_color="transparent")
-        v_row1.pack(fill=tk.X, pady=5)
-        
-        self.enable_heatmap = tk.BooleanVar(value=False)
-        ctk.CTkCheckBox(v_row1, text="🔥 Density Heatmap Overlay", variable=self.enable_heatmap).pack(side=tk.LEFT, padx=(0, 20))
+        ctk.CTkLabel(visual_group, text="📊 Live Heatmap Analytics", font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(visual_group, text="Density heatmap visualization is automatically enabled for CSRNet evaluation.", font=ctk.CTkFont(size=11), text_color="gray", wraplength=320, justify="left").pack(anchor="w", pady=(2, 0))
 
         # Calibration
         cal_group = ctk.CTkFrame(container, fg_color="transparent")
