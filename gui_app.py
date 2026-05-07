@@ -91,7 +91,8 @@ class CrowdCountingGUI:
         self.roi_select_active = False
         self.roi_start = None
         self.roi_current = None
-        self.original_threshold = None # To store threshold before scaling
+        self.original_threshold = None # To store critical threshold before scaling
+        self.original_warning_threshold = None # To store warning threshold before scaling
         self.image_item = None # Canvas image item ID
         
         self.dashboard_window = None
@@ -1015,10 +1016,14 @@ class CrowdCountingGUI:
         self.roi_coords = None
         self.reset_roi_btn.configure(state=tk.DISABLED)
         
-        # Restore threshold
+        # Restore thresholds
         if self.original_threshold is not None:
             self.count_threshold.set(str(self.original_threshold))
             self.original_threshold = None
+        
+        if self.original_warning_threshold is not None:
+            self.warning_threshold.set(str(self.original_warning_threshold))
+            self.original_warning_threshold = None
             
         self.update_status("ROI Reset")
 
@@ -1029,13 +1034,19 @@ class CrowdCountingGUI:
             total_area = self.fixed_width * self.fixed_height
             ratio = roi_area / total_area
             
-            # Store original if not already stored
+            # Store originals if not already stored
             if self.original_threshold is None:
                 self.original_threshold = self.get_safe_val(self.count_threshold, int, 100)
+            if self.original_warning_threshold is None:
+                self.original_warning_threshold = self.get_safe_val(self.warning_threshold, int, 50)
             
-            new_threshold = int(self.original_threshold * ratio)
-            self.count_threshold.set(str(max(1, new_threshold))) # Minimum 1
-            print(f"Threshold scaled from {self.original_threshold} to {new_threshold} (Ratio: {ratio:.2f})")
+            new_critical = int(self.original_threshold * ratio)
+            new_warning = int(self.original_warning_threshold * ratio)
+            
+            self.count_threshold.set(str(max(1, new_critical))) # Minimum 1
+            self.warning_threshold.set(str(max(1, new_warning))) # Minimum 1
+            
+            print(f"Thresholds scaled: Critical {self.original_threshold}->{new_critical}, Warning {self.original_warning_threshold}->{new_warning} (Ratio: {ratio:.2f})")
 
     def update_status(self, message):
         self.status_label.configure(text=f"Status: {message}")
